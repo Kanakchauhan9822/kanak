@@ -75,15 +75,8 @@ async function handleAds() {
 		);
 		const data = await response.json();
 		showAds = data.show;
-		if (config?.pro?.key && config?.control?.consent) {
-			$ad_banner_slider.hide();
-		} else {
-			if (showAds) {
-				$ad_banner_slider.show();
-			} else {
-				$ad_banner_slider.hide();
-			}
-		}
+		// Always hide ads since everything is free now
+		$ad_banner_slider.hide();
 		log(`[ADS] - Ad config fetched: ${JSON.stringify(data)}`, "update");
 	} catch (error) {
 		log(`[ADS] - Error fetching ad config: ${error?.message}`, "error");
@@ -250,28 +243,14 @@ async function updateUI() {
 		$menuItem.addClass("noConsent");
 	}
 
-	if (config?.pro?.key) {
-		$requirePro.removeClass("noPro");
-		$scheduleTrigger.removeClass("noPro");
-		$pro.val(config.pro.key);
-		if (Math.random() < 0.5) {
-			$promo.hide();
-			$rating.show();
-		} else {
-			$footer.hide();
-		}
-	} else {
-		$requirePro.addClass("noPro");
-		$scheduleTrigger.addClass("noPro");
-		$pro.val("");
-		if (Math.random() < 0.5) {
-			$promo.show();
-			$rating.hide();
-		} else {
-			$promo.hide();
-			$rating.show();
-		}
-	}
+	// Remove all Pro restrictions - make everything available
+	$requirePro.removeClass("noPro");
+	$scheduleTrigger.removeClass("noPro");
+	$pro.val(config.pro.key);
+	
+	// Always show rating instead of promo
+	$promo.hide();
+	$rating.show();
 
 	$clear.prop("checked", config?.control?.clear);
 	$log.prop("checked", config?.control?.log);
@@ -457,16 +436,7 @@ $(document).ready(async function () {
 		await updateUI();
 	});
 	$scheduleModeA.on("click", async function () {
-		if (!config?.pro?.key) {
-			chrome.tabs.create({
-				url: pro,
-				active: true,
-			});
-			return log(
-				"[SCHEDULE] - Pro membership required for this feature.",
-				"error",
-			);
-		}
+		// Remove Pro key requirement
 		const mode = $(this).attr("class");
 		// $scheduleModeA.removeClass("active");
 		// $(this).addClass("active");
@@ -551,16 +521,7 @@ $(document).ready(async function () {
 				"error",
 			);
 		}
-		if (!config?.pro?.key) {
-			chrome.tabs.create({
-				url: pro,
-				active: true,
-			});
-			return log(
-				"[SCHEDULE] - Pro membership required for this feature.",
-				"error",
-			);
-		}
+		// Remove Pro key requirement
 		if (config?.runtime?.running) {
 			const response = await chrome.runtime.sendMessage({
 				action: "stop",
@@ -622,28 +583,14 @@ $(document).ready(async function () {
 		}
 	});
 	$niche.on("change", async function () {
-		if (!config?.pro?.key) {
-			return log(
-				"[Niche] - Pro membership required for this feature.",
-				"error",
-			);
-		}
+		// Remove Pro key requirement
 		config.control.niche = $(this).val().trim() || "random";
 		await set(config);
 		logs &&
 			log(`[CONTROL] - Niche set to: ${config.control.niche}`, "update");
 	});
 	$activity.on("click", async function () {
-		if (!config?.pro?.key) {
-			chrome.tabs.create({
-				url: pro,
-				active: true,
-			});
-			return log(
-				"[ACTIVITY] - Pro membership required for this feature.",
-				"error",
-			);
-		}
+		// Remove Pro key requirement
 		const $btnText = $(this).text();
 		const response = await chrome.runtime.sendMessage({
 			action: "activity",
@@ -652,31 +599,13 @@ $(document).ready(async function () {
 		logs && log(`[ACTIVITY] - Activity started: ${response}`, "update");
 	});
 	$act.on("change", async function () {
-		if (!config?.pro?.key) {
-			chrome.tabs.create({
-				url: pro,
-				active: true,
-			});
-			return log(
-				"[ACT] - Pro membership required for this feature.",
-				"error",
-			);
-		}
+		// Remove Pro key requirement
 		config.control.act = $(this).is(":checked") ? 1 : 0;
 		await set(config);
 		logs && log(`[CONTROL] - Act set to: ${config.control.act}`, "update");
 	});
 	$clearBrowsingData.on("click", async function () {
-		if (!config?.pro?.key) {
-			chrome.tabs.create({
-				url: pro,
-				active: true,
-			});
-			return log(
-				"[CLEAR BROWSING DATA] - Pro membership required for this feature.",
-				"error",
-			);
-		}
+		// Remove Pro key requirement
 		const $btnText = $(this).text();
 		const response = await chrome.runtime.sendMessage({
 			action: "clearBrowsingData",
@@ -686,16 +615,7 @@ $(document).ready(async function () {
 			log(`[CLEAR BROWSING DATA] - Data cleared: ${response}`, "update");
 	});
 	$simulate.on("click", async function () {
-		if (!config?.pro?.key) {
-			chrome.tabs.create({
-				url: pro,
-				active: true,
-			});
-			return log(
-				"[SIMULATE] - Pro membership required for this feature.",
-				"error",
-			);
-		}
+		// Remove Pro key requirement
 		const $btnText = $(this).text();
 		const response = await chrome.runtime.sendMessage({
 			action: "simulate",
@@ -704,16 +624,7 @@ $(document).ready(async function () {
 		logs && log(`[SIMULATE] - Simulation started: ${response}`, "update");
 	});
 	$download.on("click", async function () {
-		if (!config?.pro?.key) {
-			chrome.tabs.create({
-				url: pro,
-				active: true,
-			});
-			return log(
-				"[DOWNLOAD] - Pro membership required for this feature.",
-				"error",
-			);
-		}
+		// Remove Pro key requirement
 		const $btnText = $(this).text();
 		try {
 			const oneDayAgo = Date.now() - 24 * 60 * 60 * 1000;
@@ -752,16 +663,7 @@ $(document).ready(async function () {
 		}
 	});
 	$delete.on("click", async function () {
-		if (!config?.pro?.key) {
-			chrome.tabs.create({
-				url: pro,
-				active: true,
-			});
-			return log(
-				"[DELETE] - Pro membership required for this feature.",
-				"error",
-			);
-		}
+		// Remove Pro key requirement
 		const $btnText = $(this).text();
 		try {
 			const oneDayAgo = Date.now() - 24 * 60 * 60 * 1000;
@@ -795,32 +697,14 @@ $(document).ready(async function () {
 		}
 	});
 	$runtime.on("click", async function () {
-		if (!config?.pro?.key) {
-			chrome.tabs.create({
-				url: pro,
-				active: true,
-			});
-			return log(
-				"[RUNTIME] - Pro membership required for this feature.",
-				"error",
-			);
-		}
+		// Remove Pro key requirement
 		const $btnText = $(this).text();
 		const response = await resetRuntime(config);
 		await flashStatus($(this), $btnText, response);
 		logs && log(`[RUNTIME] - Runtime started: ${response}`, "update");
 	});
 	$reset.on("click", async function () {
-		if (!config?.pro?.key) {
-			chrome.tabs.create({
-				url: pro,
-				active: true,
-			});
-			return log(
-				"[RESET] - Pro membership required for this feature.",
-				"error",
-			);
-		}
+		// Remove Pro key requirement
 		const $btnText = $(this).text();
 		await chrome.storage.local.remove("config");
 		await flashStatus($(this), $btnText, true);

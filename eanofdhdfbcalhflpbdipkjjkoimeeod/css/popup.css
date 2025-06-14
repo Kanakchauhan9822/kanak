@@ -330,8 +330,7 @@ section {
 	padding: calc(4px * var(--scale)) calc(16px * var(--scale));
 }
 
-.noConsent,
-.noPro {
+.noConsent {
 	background: var(--surface);
 	color: var(--text-muted);
 	cursor: not-allowed;

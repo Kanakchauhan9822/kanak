@@ -1630,8 +1630,7 @@ async function initialise(searches) {
 		}
 		if (
 			config?.runtime?.running &&
-			config?.control?.act &&
-			config?.pro?.key
+			config?.control?.act
 		) {
 			logs &&
 				log(
@@ -1674,29 +1673,23 @@ async function initialise(searches) {
 		config.runtime.rsaTab = null;
 		config.runtime.running = 0;
 		await set(config); // instead of resetRuntime(config); to keep the last search state visible in popup
-		if (!config?.pro?.key) {
-			await chrome.tabs.create({
-				url: "https://getprojects.gumroad.com/l/rsa",
-				active: true,
-			});
-		} else {
-			const modes = {
-				m3: { min: 300, range: 150 },
-				m4: { min: 900, range: 150 },
-			};
-			const mode = modes[config?.schedule?.mode];
-			if (mode) {
-				const randomDelay =
-					Math.floor(Math.random() * mode.range) + mode.min;
-				const alarmTime = Date.now() + randomDelay * 1000;
-				await chrome.alarms.create("schedule", { when: alarmTime });
-				const formattedTime = new Date(alarmTime).toLocaleTimeString();
-				logs &&
-					log(
-						`[INITIALISE] - Scheduled next run for ${formattedTime}.`,
-						"update",
-					);
-			}
+		// Remove Pro requirement for scheduling
+		const modes = {
+			m3: { min: 300, range: 150 },
+			m4: { min: 900, range: 150 },
+		};
+		const mode = modes[config?.schedule?.mode];
+		if (mode) {
+			const randomDelay =
+				Math.floor(Math.random() * mode.range) + mode.min;
+			const alarmTime = Date.now() + randomDelay * 1000;
+			await chrome.alarms.create("schedule", { when: alarmTime });
+			const formattedTime = new Date(alarmTime).toLocaleTimeString();
+			logs &&
+				log(
+					`[INITIALISE] - Scheduled next run for ${formattedTime}.`,
+					"update",
+				);
 		}
 	}
 }
@@ -1710,7 +1703,6 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
 		logs && log(`[ALARM] - Alarm triggered.`, "update");
 		if (
 			config?.control?.consent &&
-			config?.pro?.key &&
 			!["m1", "m2"].includes(config?.schedule?.mode) &&
 			(config?.schedule?.desk !== 0 || config?.schedule?.mob !== 0)
 		) {
@@ -1745,7 +1737,7 @@ chrome.runtime.onInstalled.addListener(async (details) => {
 			Object.assign(config, stored);
 		}
 		await setUserGeo();
-		if (config?.control?.consent && config?.pro?.key) {
+		if (config?.control?.consent) {
 			await reverify();
 		}
 		config.runtime.act = 0;
@@ -1760,7 +1752,7 @@ chrome.runtime.onStartup.addListener(async () => {
 		Object.assign(config, stored);
 	}
 	log(`[STARTUP] - Extension started.`, "success");
-	if (config?.control?.consent && config?.pro?.key) {
+	if (config?.control?.consent) {
 		await reverify();
 	}
 	const storedUpdated = await get();
@@ -1769,7 +1761,6 @@ chrome.runtime.onStartup.addListener(async () => {
 	}
 	if (
 		config?.control?.consent &&
-		config?.pro?.key &&
 		config?.schedule?.mode !== "m1" &&
 		(config?.schedule?.desk !== 0 || config?.schedule?.mob !== 0)
 	) {
@@ -1810,14 +1801,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 				break;
 
 			case "schedule":
-				if (!config?.pro?.key) {
-					log("Pro key not found. Ignoring schedule.", "error");
-					sendResponse({
-						success: false,
-						message: "Pro key not found. Ignoring schedule.",
-					});
-					return;
-				}
+				// Remove Pro key requirement
 				if (
 					config?.schedule?.desk === 0 &&
 					config?.schedule?.mob === 0
@@ -1850,14 +1834,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 				break;
 
 			case "clearBrowsingData":
-				if (!config?.pro?.key) {
-					log("Pro key not found. Ignoring clear.", "error");
-					sendResponse({
-						success: false,
-						message: "Pro key not found. Ignoring clear.",
-					});
-					return;
-				}
+				// Remove Pro key requirement
 				log("Clearing Bing browsing data.");
 				await clear();
 				sendResponse({
@@ -1867,14 +1844,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 				break;
 
 			case "simulate":
-				if (!config?.pro?.key) {
-					log("Pro key not found. Ignoring simulate.", "error");
-					sendResponse({
-						success: false,
-						message: "Pro key not found. Ignoring simulate.",
-					});
-					return;
-				}
+				// Remove Pro key requirement
 				log("Toggling mobile device simulation.");
 				sendResponse({
 					success: true,
@@ -1884,14 +1854,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 				break;
 
 			case "activity":
-				if (!config?.pro?.key) {
-					log("Pro key not found. Ignoring activity.", "error");
-					sendResponse({
-						success: false,
-						message: "Pro key not found. Ignoring activity.",
-					});
-					return;
-				}
+				// Remove Pro key requirement
 				log("Starting activity.");
 				sendResponse({ success: true, message: "Starting activity." });
 				const activityTab = await chrome.tabs.create({
