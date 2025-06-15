@@ -326,8 +326,8 @@ $(document).ready(async function () {
 		await updateUI();
 	});
 	$searchMin.on("change", async function () {
-		const min = 15;
-		const max = 40;
+		const min = 1; // Changed from 15 to 1
+		const max = 999999; // Removed upper limit
 		let val = Number($(this).val());
 		let range = Number($searchMax.val());
 		if (isNaN(val) || val < min) {
@@ -335,17 +335,14 @@ $(document).ready(async function () {
 		} else {
 			val = Math.max(min, Math.min(max, val));
 		}
-		if (range < val * 1.5) {
-			range = Math.ceil(val * 1.5);
-			config.search.max = range;
-		}
+		// Removed the automatic adjustment of max based on min
 		config.search.min = val;
 		await set(config);
 		await updateUI();
 	});
 	$searchMax.on("change", async function () {
-		const min = 30;
-		const max = 60;
+		const min = 1; // Changed from 30 to 1
+		const max = 999999; // Removed upper limit
 		let val = Number($(this).val());
 		let range = Number($searchMin.val());
 		if (isNaN(val) || val < min) {
@@ -353,10 +350,7 @@ $(document).ready(async function () {
 		} else {
 			val = Math.max(min, Math.min(max, val));
 		}
-		if (val < range * 1.5) {
-			range = Math.floor(val / 1.5);
-			config.search.min = range;
-		}
+		// Removed the automatic adjustment of min based on max
 		config.search.max = val;
 		await set(config);
 		await updateUI();
@@ -404,8 +398,8 @@ $(document).ready(async function () {
 		await updateUI();
 	});
 	$scheduleMin.on("change", async function () {
-		const min = 15;
-		const max = 40;
+		const min = 1; // Changed from 15 to 1
+		const max = 999999; // Removed upper limit
 		let val = Number($(this).val());
 		let range = Number($scheduleMax.val());
 		if (isNaN(val) || val < min) {
@@ -418,18 +412,14 @@ $(document).ready(async function () {
 		await updateUI();
 	});
 	$scheduleMax.on("change", async function () {
-		const min = 30;
-		const max = 60;
+		const min = 1; // Changed from 30 to 1
+		const max = 999999; // Removed upper limit
 		let val = Number($(this).val());
 		let range = Number($scheduleMin.val());
 		if (isNaN(val) || val < min) {
 			val = min;
 		} else {
 			val = Math.max(min, Math.min(max, val));
-		}
-		if (val < range * 1.5) {
-			range = Math.floor(val / 1.5);
-			config.schedule.min = range;
 		}
 		config.schedule.max = val;
 		await set(config);
