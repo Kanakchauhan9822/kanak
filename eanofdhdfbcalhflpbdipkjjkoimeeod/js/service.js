@@ -78,6 +78,26 @@ let shortestDelay = 18000 / navigator.hardwareConcurrency;
 let mediumDelay = 54000 / navigator.hardwareConcurrency;
 let longestDelay = 90000 / navigator.hardwareConcurrency;
 
+// Add profile isolation and session management
+let profileId = null;
+let sessionId = null;
+
+async function initializeProfile() {
+	try {
+		// Generate unique profile identifier
+		const tabs = await chrome.tabs.query({});
+		const activeTab = tabs.find(tab => tab.active);
+		profileId = `profile_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+		sessionId = `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+		
+		logs && log(`[PROFILE] Initialized profile: ${profileId}`, "update");
+		return true;
+	} catch (error) {
+		log(`[PROFILE] Error initializing profile: ${error.message}`, "error");
+		return false;
+	}
+}
+
 async function delay(ms, interruptible = true) {
 	if (ms > 1000) {
 		logs &&
@@ -90,9 +110,6 @@ async function delay(ms, interruptible = true) {
 	if (!interruptible) {
 		return new Promise((resolve) =>
 			setTimeout(() => {
-				// if (ms > 1000) {
-				// 	logs && log(`[DELAY] Waited for ${ms}ms.`);
-				// }
 				resolve();
 			}, ms),
 		);
@@ -127,9 +144,6 @@ async function delay(ms, interruptible = true) {
 			if (!resolved) {
 				resolved = true;
 				clearInterval(intervalId);
-				// if (ms > 1000) {
-				// 	logs && log(`[DELAY] Waited for ${ms}ms.`);
-				// }
 			}
 			resolve();
 		}, ms);
@@ -247,9 +261,10 @@ async function clear(interruptible = true) {
 	}
 
 	try {
+		// Enhanced clearing for better session isolation
 		await chrome.browsingData.remove(
 			{
-				origins: [bing],
+				origins: [bing, "https://login.microsoftonline.com", "https://account.microsoft.com"],
 				since: 0,
 			},
 			{
@@ -258,10 +273,12 @@ async function clear(interruptible = true) {
 				serviceWorkers: true,
 				localStorage: true,
 				pluginData: true,
+				indexedDB: true,
+				webSQL: true,
 			},
 		);
 		await delay(shortestDelay, interruptible);
-		logs && log("[CLEAR] Browsing data cleared.", "success");
+		logs && log("[CLEAR] Enhanced browsing data cleared.", "success");
 	} catch (error) {
 		log(`[CLEAR] Error clearing browsing data: ${error.message}`, "error");
 		return false;
@@ -281,7 +298,7 @@ async function clear(interruptible = true) {
 	return true;
 }
 
-// WATCHER
+// WATCHER - Enhanced for better profile isolation
 (async function () {
 	logs &&
 		log(
@@ -518,19 +535,24 @@ async function simulate(tabId, interruptible = true) {
 				"success",
 			);
 
+		// Enhanced user agent with profile-specific variations
+		const baseUA = config?.device?.ua;
+		const profileVariation = profileId ? profileId.slice(-4) : "0000";
+		const enhancedUA = baseUA.replace(/Chrome\/[\d.]+/, `Chrome/120.0.${profileVariation}.0`);
+
 		await race(
 			chrome.debugger.sendCommand(
 				{ tabId },
 				"Network.setUserAgentOverride",
 				{
-					userAgent: config?.device?.ua,
+					userAgent: enhancedUA,
 				},
 			),
 			shortestDelay,
 		);
 		logs &&
 			log(
-				`[SIMULATE] - User agent overridden for tab ${tabId}: ${config?.device?.ua}`,
+				`[SIMULATE] - Enhanced user agent set for tab ${tabId}: ${enhancedUA}`,
 				"success",
 			);
 
@@ -778,6 +800,80 @@ async function enableDomains(tabId) {
 	}
 }
 
+// Enhanced login function with better reliability
+async function ensureLogin(tabId, interruptible = true) {
+	if (interruptible && !config?.runtime?.running) {
+		logs && log("[LOGIN] Interrupted, skipping login check.", "warning");
+		return false;
+	}
+
+	logs && log(`[LOGIN] Checking login status for tab ${tabId}...`, "update");
+	
+	try {
+		await enableDomains(tabId);
+		await delay(2000, interruptible); // Wait for page to fully load
+		
+		// Check if already logged in by looking for user menu or account info
+		const checkLoginScript = `
+			(function() {
+				// Check for various login indicators
+				const userMenu = document.querySelector('#id_n, .id_button, [data-bi-name="mecontrol"]');
+				const signInButton = document.querySelector('#id_s, .id_signin, [data-bi-name="signin"]');
+				const rewardsButton = document.querySelector('#id_rh, .id_rewards');
+				
+				if (userMenu && !signInButton) {
+					return { loggedIn: true, method: 'userMenu' };
+				}
+				
+				if (rewardsButton) {
+					return { loggedIn: true, method: 'rewardsButton' };
+				}
+				
+				// Check for Microsoft account indicators
+				const accountInfo = document.querySelector('.msame_Header_name, .msame_TileText');
+				if (accountInfo) {
+					return { loggedIn: true, method: 'accountInfo' };
+				}
+				
+				return { loggedIn: false, signInAvailable: !!signInButton };
+			})()
+		`;
+
+		const { result } = await race(
+			chrome.debugger.sendCommand({ tabId }, "Runtime.evaluate", {
+				expression: checkLoginScript,
+				returnByValue: true,
+			}),
+			shortestDelay,
+		);
+
+		const loginStatus = result.value;
+		logs && log(`[LOGIN] Status check result: ${JSON.stringify(loginStatus)}`, "update");
+
+		if (loginStatus.loggedIn) {
+			logs && log(`[LOGIN] Already logged in via ${loginStatus.method}`, "success");
+			return true;
+		}
+
+		if (!loginStatus.signInAvailable) {
+			logs && log("[LOGIN] No sign-in button found, may need to navigate to login page", "warning");
+			// Try navigating to Microsoft login page
+			await chrome.tabs.update(tabId, {
+				url: "https://login.microsoftonline.com/common/oauth2/authorize?client_id=0000000040197a6a&scope=openid%20profile%20https://graph.microsoft.com/user.read&response_type=code&redirect_uri=https://www.bing.com/fd/auth/signin"
+			});
+			await wait(tabId);
+			await delay(3000, interruptible);
+		}
+
+		// Attempt to trigger login
+		return await click(interruptible);
+
+	} catch (error) {
+		log(`[LOGIN] Error checking/ensuring login: ${error.message}`, "error");
+		return false;
+	}
+}
+
 async function click(interruptible = true) {
 	if (interruptible && !config?.runtime?.running) {
 		logs &&
@@ -797,9 +893,75 @@ async function click(interruptible = true) {
 
 	try {
 		await enableDomains(tabId);
-		const selector = config?.runtime?.mobile
-			? "#mHamburger"
-			: ".b_clickarea";
+		
+		// Enhanced selector logic for better login detection
+		const selectorScript = `
+			(function() {
+				const mobile = ${config?.runtime?.mobile || false};
+				let selector = null;
+				let element = null;
+				
+				if (mobile) {
+					// Mobile selectors in order of preference
+					const mobileSelectors = [
+						"#mHamburger",
+						".hamburger",
+						"[data-bi-name='hamburger']",
+						".b_hamburger"
+					];
+					
+					for (const sel of mobileSelectors) {
+						element = document.querySelector(sel);
+						if (element && element.offsetParent !== null) {
+							selector = sel;
+							break;
+						}
+					}
+				} else {
+					// Desktop selectors for login
+					const desktopSelectors = [
+						"#id_s", // Sign in button
+						".id_signin",
+						"[data-bi-name='signin']",
+						".b_clickarea", // Fallback
+						"#id_n" // User menu if already logged in
+					];
+					
+					for (const sel of desktopSelectors) {
+						element = document.querySelector(sel);
+						if (element && element.offsetParent !== null) {
+							selector = sel;
+							break;
+						}
+					}
+				}
+				
+				return { selector, found: !!element, visible: element ? element.offsetParent !== null : false };
+			})()
+		`;
+
+		const { result } = await race(
+			chrome.debugger.sendCommand({ tabId }, "Runtime.evaluate", {
+				expression: selectorScript,
+				returnByValue: true,
+			}),
+			shortestDelay,
+		);
+
+		const selectorInfo = result.value;
+		logs && log(`[CLICK] Selector info: ${JSON.stringify(selectorInfo)}`, "update");
+
+		if (!selectorInfo.found) {
+			logs && log("[CLICK] No suitable element found for clicking", "warning");
+			// Fallback to content script method
+			await chrome.tabs.sendMessage(tabId, {
+				action: "login",
+				mobile: config?.runtime?.mobile,
+			});
+			return true;
+		}
+
+		const selector = selectorInfo.selector;
 
 		const { root: documentNode } = await race(
 			chrome.debugger.sendCommand({ tabId }, "DOM.getDocument"),
@@ -1021,6 +1183,13 @@ async function query(interruptible = true) {
 	searchQuery = searchQuery
 		.replace("[year]", currentYear.toString())
 		.replace("[country]", config?.runtime?.country);
+	
+	// Add profile-specific variation to make searches unique per profile
+	if (profileId) {
+		const profileSuffix = profileId.slice(-4);
+		searchQuery = `${searchQuery} ${profileSuffix}`;
+	}
+	
 	searchQuery = addErrors(searchQuery);
 	logs && log(`[QUERY] - Search query: ${searchQuery}`, "update");
 
@@ -1260,6 +1429,10 @@ async function search(searches, min, max, interruptible = true) {
 		logs && log(`[SEARCH] Tab updated to Bing URL: ${bing}`, "update");
 	}
 
+	// Ensure login before starting searches
+	await ensureLogin(tabId, interruptible);
+	await delay(shortestDelay, interruptible);
+
 	for (let i = 0; i < searches; i++) {
 		if (interruptible && !config?.runtime?.running) {
 			logs &&
@@ -1288,9 +1461,12 @@ async function search(searches, min, max, interruptible = true) {
 			await click(interruptible);
 			await delay(shortestDelay, interruptible);
 		}
-		const randomDelay =
-			Math.floor(Math.random() * (max * 1000 - min * 1000 + 1)) +
-			min * 1000;
+		
+		// Add more randomization to delays
+		const baseDelay = Math.floor(Math.random() * (max * 1000 - min * 1000 + 1)) + min * 1000;
+		const profileVariation = profileId ? parseInt(profileId.slice(-2), 16) % 1000 : 0;
+		const randomDelay = baseDelay + profileVariation;
+		
 		if (clearIt && i < 3) {
 			await chrome.tabs.update(tabId, {
 				active: true,
@@ -1347,7 +1523,7 @@ async function search(searches, min, max, interruptible = true) {
 			await delay(randomDelay, interruptible);
 		} else {
 			logs && log("[SEARCH] Waiting for longer delay...", "update");
-			await delay(mediumDelay, interruptible);
+			await delay(mediumDelay + profileVariation, interruptible);
 		}
 	}
 	await chrome.tabs.update(tabId, {
@@ -1536,6 +1712,7 @@ async function activity(tabId, interruptible = true) {
 }
 
 async function initialise(searches) {
+	await initializeProfile(); // Initialize profile isolation
 	await resetRuntime(config); // reset runtime state of last search session
 	if (!navigator.onLine) {
 		logs &&
