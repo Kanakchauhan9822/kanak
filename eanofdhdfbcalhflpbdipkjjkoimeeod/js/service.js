@@ -12,11 +12,13 @@ let config = {
 	pro: { key: "", seats: 0 }
 };
 
-// Global variables for search management
+// Global variables for optimized search management
 let searchQueue = [];
 let isProcessingQueue = false;
-let currentSearchTimeout = null;
 let searchStartTime = null;
+let activeTabs = new Map(); // Track active tabs for reuse
+let concurrentSearches = 0;
+const MAX_CONCURRENT_SEARCHES = 3; // Limit concurrent searches per profile
 
 // Initialize extension
 chrome.runtime.onInstalled.addListener(async () => {
@@ -40,7 +42,7 @@ chrome.runtime.onStartup.addListener(async () => {
 // Message handler
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 	handleMessage(request, sender, sendResponse);
-	return true; // Keep message channel open for async responses
+	return true;
 });
 
 async function handleMessage(request, sender, sendResponse) {
@@ -98,12 +100,12 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
 		
 		// Reschedule based on mode
 		if (config.schedule.mode === "m3") {
-			const randomDelay = Math.floor(Math.random() * 150) + 300; // 5-7.5 minutes
+			const randomDelay = Math.floor(Math.random() * 150) + 300;
 			await chrome.alarms.create("schedule", {
 				when: Date.now() + randomDelay * 1000
 			});
 		} else if (config.schedule.mode === "m4") {
-			const randomDelay = Math.floor(Math.random() * 150) + 900; // 15-17.5 minutes
+			const randomDelay = Math.floor(Math.random() * 150) + 900;
 			await chrome.alarms.create("schedule", {
 				when: Date.now() + randomDelay * 1000
 			});
@@ -149,27 +151,42 @@ async function startSearches() {
 		
 		await set(config);
 		
-		// Build search queue
+		// Build optimized search queue
 		searchQueue = [];
 		
 		// Add desktop searches
 		for (let i = 0; i < desktopSearches; i++) {
-			searchQueue.push({ type: "desktop", index: i + 1 });
+			searchQueue.push({ 
+				type: "desktop", 
+				index: i + 1,
+				id: `desktop_${i + 1}`,
+				priority: Math.random() // For shuffling
+			});
 		}
 		
 		// Add mobile searches
 		for (let i = 0; i < mobileSearches; i++) {
-			searchQueue.push({ type: "mobile", index: i + 1 });
+			searchQueue.push({ 
+				type: "mobile", 
+				index: i + 1,
+				id: `mobile_${i + 1}`,
+				priority: Math.random() // For shuffling
+			});
 		}
 		
-		// Shuffle queue for more realistic behavior
-		searchQueue = shuffleArray(searchQueue);
+		// Shuffle queue for realistic behavior
+		searchQueue.sort((a, b) => a.priority - b.priority);
 		
 		searchStartTime = Date.now();
+		concurrentSearches = 0;
+		
 		logs && log(`[START] Starting ${totalSearches} searches (${desktopSearches} desktop, ${mobileSearches} mobile)`, "success");
 		
-		// Start processing queue
-		processSearchQueue();
+		// Pre-create tabs for better performance
+		await preCreateTabs();
+		
+		// Start processing queue with parallel execution
+		processSearchQueueParallel();
 		
 		return { success: true, message: "Searches started" };
 		
@@ -183,36 +200,31 @@ async function stopSearches() {
 	const logs = config?.control?.log;
 	
 	try {
-		// Clear any pending timeouts
-		if (currentSearchTimeout) {
-			clearTimeout(currentSearchTimeout);
-			currentSearchTimeout = null;
-		}
-		
 		// Clear search queue
 		searchQueue = [];
 		isProcessingQueue = false;
+		concurrentSearches = 0;
 		
 		// Update runtime
 		config.runtime.running = 0;
 		await set(config);
 		
-		// Close RSA tab if exists
-		if (config.runtime.rsaTab) {
+		// Close all active tabs
+		for (const [tabId, tabInfo] of activeTabs) {
 			try {
-				await chrome.tabs.remove(config.runtime.rsaTab);
+				await chrome.tabs.remove(tabId);
+				// Detach debugger if attached
+				try {
+					await chrome.debugger.detach({ tabId });
+				} catch (e) {
+					// Debugger might not be attached
+				}
 			} catch (e) {
 				// Tab might already be closed
 			}
-			config.runtime.rsaTab = null;
 		}
 		
-		// Detach debugger if attached
-		try {
-			await chrome.debugger.detach({ tabId: config.runtime.rsaTab });
-		} catch (e) {
-			// Debugger might not be attached
-		}
+		activeTabs.clear();
 		
 		logs && log("[STOP] Searches stopped", "success");
 		return { success: true, message: "Searches stopped" };
@@ -223,25 +235,77 @@ async function stopSearches() {
 	}
 }
 
-async function processSearchQueue() {
+async function preCreateTabs() {
 	const logs = config?.control?.log;
 	
-	if (isProcessingQueue || searchQueue.length === 0 || !config.runtime.running) {
-		if (searchQueue.length === 0 && config.runtime.running) {
-			// All searches completed
+	try {
+		// Create 2-3 tabs for reuse (desktop and mobile)
+		const desktopTab = await chrome.tabs.create({
+			url: "https://www.bing.com",
+			active: false
+		});
+		
+		const mobileTab = await chrome.tabs.create({
+			url: "https://www.bing.com", 
+			active: false
+		});
+		
+		activeTabs.set(desktopTab.id, { type: "desktop", inUse: false });
+		activeTabs.set(mobileTab.id, { type: "mobile", inUse: false });
+		
+		// Setup mobile simulation on mobile tab
+		await setupMobileSimulation(mobileTab.id);
+		
+		logs && log("[TABS] Pre-created tabs for better performance", "update");
+		
+	} catch (error) {
+		logs && log(`[TABS] Error pre-creating tabs: ${error.message}`, "error");
+	}
+}
+
+async function processSearchQueueParallel() {
+	const logs = config?.control?.log;
+	
+	if (!config.runtime.running || searchQueue.length === 0) {
+		if (searchQueue.length === 0 && config.runtime.running && concurrentSearches === 0) {
 			await completeSearches();
 		}
 		return;
 	}
 	
-	isProcessingQueue = true;
+	// Process multiple searches concurrently
+	while (searchQueue.length > 0 && concurrentSearches < MAX_CONCURRENT_SEARCHES && config.runtime.running) {
+		const searchItem = searchQueue.shift();
+		concurrentSearches++;
+		
+		// Process search without waiting
+		processSingleSearchAsync(searchItem);
+		
+		// Small delay between starting concurrent searches
+		await delay(100);
+	}
+	
+	// Schedule next batch if queue not empty
+	if (searchQueue.length > 0 && config.runtime.running) {
+		setTimeout(() => {
+			processSearchQueueParallel();
+		}, 1000);
+	}
+}
+
+async function processSingleSearchAsync(searchItem) {
+	const logs = config?.control?.log;
 	
 	try {
-		const searchItem = searchQueue.shift();
 		logs && log(`[QUEUE] Processing ${searchItem.type} search ${searchItem.index}`, "update");
 		
+		// Calculate delay BEFORE search (more efficient)
+		const minDelay = (config.search.min || 15) * 1000;
+		const maxDelay = (config.search.max || 30) * 1000;
+		const delay_time = Math.floor(Math.random() * (maxDelay - minDelay + 1)) + minDelay;
+		
 		// Perform the search
-		const result = await performSingleSearch(searchItem);
+		const result = await performSingleSearchOptimized(searchItem);
 		
 		// Update progress
 		config.runtime.done++;
@@ -251,77 +315,68 @@ async function processSearchQueue() {
 		
 		await set(config);
 		
-		// Calculate delay for next search
-		const minDelay = (config.search.min || 15) * 1000; // Convert to milliseconds
-		const maxDelay = (config.search.max || 30) * 1000;
-		const delay = Math.floor(Math.random() * (maxDelay - minDelay + 1)) + minDelay;
+		// Apply delay after search completion
+		await delay(delay_time);
 		
-		logs && log(`[QUEUE] Next search in ${delay/1000}s`, "update");
+		concurrentSearches--;
 		
-		// Schedule next search
-		currentSearchTimeout = setTimeout(() => {
-			isProcessingQueue = false;
-			processSearchQueue();
-		}, delay);
+		// Continue processing if more searches available
+		if (searchQueue.length > 0 && config.runtime.running) {
+			processSearchQueueParallel();
+		} else if (searchQueue.length === 0 && concurrentSearches === 0 && config.runtime.running) {
+			await completeSearches();
+		}
 		
 	} catch (error) {
-		logs && log(`[QUEUE] Error processing queue: ${error.message}`, "error");
-		isProcessingQueue = false;
+		logs && log(`[QUEUE] Error processing search: ${error.message}`, "error");
+		concurrentSearches--;
+		config.runtime.failed++;
+		await set(config);
 		
-		// Continue with next search after a short delay
-		currentSearchTimeout = setTimeout(() => {
-			processSearchQueue();
-		}, 5000);
+		// Continue processing
+		if (searchQueue.length > 0 && config.runtime.running) {
+			setTimeout(() => {
+				processSearchQueueParallel();
+			}, 2000);
+		}
 	}
 }
 
-async function performSingleSearch(searchItem) {
+async function performSingleSearchOptimized(searchItem) {
 	const logs = config?.control?.log;
 	
 	try {
 		// Generate search query
 		const query = await generateSearchQuery();
 		
-		// Create or reuse tab
-		let tab = await getOrCreateSearchTab();
+		// Get or reuse tab efficiently
+		const tab = await getOptimizedTab(searchItem.type);
 		
-		// Configure for mobile/desktop
-		if (searchItem.type === "mobile") {
-			await setupMobileSimulation(tab.id);
-			config.runtime.mobile = 1;
-		} else {
-			await setupDesktopMode(tab.id);
-			config.runtime.mobile = 0;
+		// Quick navigation to Bing (reuse existing connection)
+		await chrome.tabs.update(tab.id, { url: `https://www.bing.com/search?q=${encodeURIComponent(query)}` });
+		
+		// Reduced wait time for page load
+		await waitForTabLoadOptimized(tab.id, 10000);
+		
+		// Minimal operations for faster completion
+		try {
+			// Quick login attempt (non-blocking)
+			chrome.tabs.sendMessage(tab.id, {
+				action: "login",
+				mobile: searchItem.type === "mobile"
+			}).catch(() => {}); // Ignore errors
+			
+			// Quick popup close (non-blocking)
+			setTimeout(() => {
+				chrome.tabs.sendMessage(tab.id, { action: "closePopups" }).catch(() => {});
+			}, 500);
+			
+		} catch (e) {
+			// Ignore content script errors
 		}
 		
-		await set(config);
-		
-		// Navigate to Bing
-		await chrome.tabs.update(tab.id, { url: "https://www.bing.com" });
-		
-		// Wait for page load
-		await waitForTabLoad(tab.id);
-		
-		// Perform login if needed
-		await chrome.tabs.sendMessage(tab.id, {
-			action: "login",
-			mobile: searchItem.type === "mobile"
-		});
-		
-		// Wait a bit for login
-		await delay(2000);
-		
-		// Close any popups
-		await chrome.tabs.sendMessage(tab.id, { action: "closePopups" });
-		
-		// Perform search
-		await chrome.tabs.sendMessage(tab.id, {
-			action: "perform",
-			query: query
-		});
-		
-		// Wait for search to complete
-		await delay(3000);
+		// Minimal wait for search completion
+		await delay(1500);
 		
 		logs && log(`[SEARCH] Completed ${searchItem.type} search: "${query}"`, "success");
 		return { success: true };
@@ -332,32 +387,47 @@ async function performSingleSearch(searchItem) {
 	}
 }
 
-async function getOrCreateSearchTab() {
+async function getOptimizedTab(searchType) {
 	try {
-		// Try to reuse existing tab
-		if (config.runtime.rsaTab) {
-			try {
-				const tab = await chrome.tabs.get(config.runtime.rsaTab);
-				return tab;
-			} catch (e) {
-				// Tab doesn't exist anymore
-				config.runtime.rsaTab = null;
+		// Find available tab of the correct type
+		for (const [tabId, tabInfo] of activeTabs) {
+			if (tabInfo.type === searchType && !tabInfo.inUse) {
+				tabInfo.inUse = true;
+				
+				// Release tab after use
+				setTimeout(() => {
+					if (activeTabs.has(tabId)) {
+						activeTabs.get(tabId).inUse = false;
+					}
+				}, 5000);
+				
+				return await chrome.tabs.get(tabId);
 			}
 		}
 		
-		// Create new tab
+		// Create new tab if none available
 		const tab = await chrome.tabs.create({
 			url: "https://www.bing.com",
 			active: false
 		});
 		
-		config.runtime.rsaTab = tab.id;
-		await set(config);
+		activeTabs.set(tab.id, { type: searchType, inUse: true });
+		
+		if (searchType === "mobile") {
+			await setupMobileSimulation(tab.id);
+		}
+		
+		// Release tab after use
+		setTimeout(() => {
+			if (activeTabs.has(tab.id)) {
+				activeTabs.get(tab.id).inUse = false;
+			}
+		}, 5000);
 		
 		return tab;
 		
 	} catch (error) {
-		throw new Error(`Failed to create search tab: ${error.message}`);
+		throw new Error(`Failed to get optimized tab: ${error.message}`);
 	}
 }
 
@@ -378,47 +448,56 @@ async function setupMobileSimulation(tabId) {
 			await set(config);
 		}
 		
-		// Attach debugger
-		await chrome.debugger.attach({ tabId }, "1.3");
+		// Attach debugger with timeout
+		await Promise.race([
+			chrome.debugger.attach({ tabId }, "1.3"),
+			new Promise((_, reject) => setTimeout(() => reject(new Error("Debugger attach timeout")), 5000))
+		]);
 		
-		// Set user agent
-		await chrome.debugger.sendCommand({ tabId }, "Network.setUserAgentOverride", {
-			userAgent: config.device.ua
-		});
-		
-		// Set device metrics
-		await chrome.debugger.sendCommand({ tabId }, "Emulation.setDeviceMetricsOverride", {
-			width: config.device.w,
-			height: config.device.h,
-			deviceScaleFactor: config.device.scale,
-			mobile: true
-		});
+		// Set user agent and device metrics in parallel
+		await Promise.all([
+			chrome.debugger.sendCommand({ tabId }, "Network.setUserAgentOverride", {
+				userAgent: config.device.ua
+			}),
+			chrome.debugger.sendCommand({ tabId }, "Emulation.setDeviceMetricsOverride", {
+				width: config.device.w,
+				height: config.device.h,
+				deviceScaleFactor: config.device.scale,
+				mobile: true
+			})
+		]);
 		
 		logs && log(`[MOBILE] Simulation enabled: ${config.device.name}`, "update");
 		
 	} catch (error) {
 		logs && log(`[MOBILE] Failed to setup simulation: ${error.message}`, "error");
-		throw error;
+		// Don't throw error, continue without mobile simulation
 	}
 }
 
-async function setupDesktopMode(tabId) {
-	const logs = config?.control?.log;
-	
-	try {
-		// Detach debugger to disable mobile simulation
-		try {
-			await chrome.debugger.detach({ tabId });
-		} catch (e) {
-			// Debugger might not be attached
-		}
+async function waitForTabLoadOptimized(tabId, timeout = 10000) {
+	return new Promise((resolve, reject) => {
+		const timeoutId = setTimeout(() => {
+			resolve(); // Don't reject, just continue
+		}, timeout);
 		
-		logs && log("[DESKTOP] Desktop mode enabled", "update");
+		const checkTab = async () => {
+			try {
+				const tab = await chrome.tabs.get(tabId);
+				if (tab.status === "complete" || tab.url.includes("bing.com")) {
+					clearTimeout(timeoutId);
+					resolve();
+				} else {
+					setTimeout(checkTab, 200); // Faster checking
+				}
+			} catch (error) {
+				clearTimeout(timeoutId);
+				resolve(); // Don't reject, just continue
+			}
+		};
 		
-	} catch (error) {
-		logs && log(`[DESKTOP] Failed to setup desktop mode: ${error.message}`, "error");
-		throw error;
-	}
+		checkTab();
+	});
 }
 
 async function generateSearchQuery() {
@@ -432,64 +511,24 @@ async function generateSearchQuery() {
 		let selectedQueries;
 		
 		if (niche === "random") {
-			// Get all queries from all niches
 			const allQueries = Object.values(queries).flat();
 			selectedQueries = allQueries;
 		} else {
 			selectedQueries = queries[niche] || queries.random;
 		}
 		
-		// Select random query
-		const query = selectedQueries[Math.floor(Math.random() * selectedQueries.length)];
-		
-		// Add some randomization
-		const variations = [
-			query,
-			`${query} 2024`,
-			`${query} latest`,
-			`${query} news`,
-			`${query} info`,
-			`best ${query}`,
-			`${query} guide`,
-			`${query} tips`
-		];
-		
+		// Select random query with simple variation
+		const baseQuery = selectedQueries[Math.floor(Math.random() * selectedQueries.length)];
+		const variations = [baseQuery, `${baseQuery} 2024`, `${baseQuery} latest`];
 		const finalQuery = variations[Math.floor(Math.random() * variations.length)];
 		
-		logs && log(`[QUERY] Generated: "${finalQuery}" (niche: ${niche})`, "update");
 		return finalQuery;
 		
 	} catch (error) {
-		logs && log(`[QUERY] Error generating query: ${error.message}`, "error");
-		// Fallback to simple random query
-		const fallbackQueries = ["news", "weather", "sports", "technology", "science"];
+		// Fallback to simple queries
+		const fallbackQueries = ["news", "weather", "sports", "technology", "science", "health", "travel", "food"];
 		return fallbackQueries[Math.floor(Math.random() * fallbackQueries.length)];
 	}
-}
-
-async function waitForTabLoad(tabId, timeout = 30000) {
-	return new Promise((resolve, reject) => {
-		const timeoutId = setTimeout(() => {
-			reject(new Error("Tab load timeout"));
-		}, timeout);
-		
-		const checkTab = async () => {
-			try {
-				const tab = await chrome.tabs.get(tabId);
-				if (tab.status === "complete") {
-					clearTimeout(timeoutId);
-					resolve();
-				} else {
-					setTimeout(checkTab, 500);
-				}
-			} catch (error) {
-				clearTimeout(timeoutId);
-				reject(error);
-			}
-		};
-		
-		checkTab();
-	});
 }
 
 async function completeSearches() {
@@ -508,27 +547,13 @@ async function completeSearches() {
 		
 		// Perform activities if enabled
 		if (config.control.act) {
-			await performActivities();
+			setTimeout(() => {
+				performActivities();
+			}, 2000);
 		}
 		
-		// Clean up
-		if (config.runtime.rsaTab) {
-			try {
-				await chrome.tabs.remove(config.runtime.rsaTab);
-			} catch (e) {
-				// Tab might already be closed
-			}
-			config.runtime.rsaTab = null;
-		}
-		
-		// Detach debugger
-		try {
-			await chrome.debugger.detach({ tabId: config.runtime.rsaTab });
-		} catch (e) {
-			// Debugger might not be attached
-		}
-		
-		await set(config);
+		// Keep tabs open for potential reuse
+		// Clean up will happen on next start or stop
 		
 	} catch (error) {
 		logs && log(`[COMPLETE] Error completing searches: ${error.message}`, "error");
@@ -577,10 +602,10 @@ async function performActivities() {
 			active: false
 		});
 		
-		await waitForTabLoad(tab.id);
+		await waitForTabLoadOptimized(tab.id, 15000);
 		
-		// Simple activity simulation - just visit the rewards page
-		await delay(5000);
+		// Simple activity simulation
+		await delay(3000);
 		
 		// Close tab
 		await chrome.tabs.remove(tab.id);
@@ -626,22 +651,19 @@ async function toggleSimulation() {
 	const logs = config?.control?.log;
 	
 	try {
-		// Create or get active tab
 		const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
 		let tabId = tabs[0]?.id;
 		
 		if (!tabId) {
 			const tab = await chrome.tabs.create({ url: "https://www.bing.com" });
 			tabId = tab.id;
-			await waitForTabLoad(tabId);
+			await waitForTabLoadOptimized(tabId);
 		}
 		
-		// Toggle simulation
 		try {
 			await chrome.debugger.detach({ tabId });
 			logs && log("[SIMULATE] Mobile simulation disabled", "update");
 		} catch (e) {
-			// Not attached, so attach
 			await setupMobileSimulation(tabId);
 			logs && log("[SIMULATE] Mobile simulation enabled", "update");
 		}
@@ -655,15 +677,6 @@ async function toggleSimulation() {
 }
 
 // Utility functions
-function shuffleArray(array) {
-	const shuffled = [...array];
-	for (let i = shuffled.length - 1; i > 0; i--) {
-		const j = Math.floor(Math.random() * (i + 1));
-		[shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
-	}
-	return shuffled;
-}
-
 function delay(ms) {
 	return new Promise(resolve => setTimeout(resolve, ms));
 }
@@ -679,11 +692,10 @@ chrome.runtime.onStartup.addListener(async () => {
 	if (storedConfig) {
 		Object.assign(config, storedConfig);
 		
-		// Auto-start if schedule mode is set to startup
 		if (storedConfig.schedule.mode === "m2") {
 			setTimeout(() => {
 				startSchedule();
-			}, 10000); // Wait 10 seconds after startup
+			}, 10000);
 		}
 	}
 });

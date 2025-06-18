@@ -4,26 +4,22 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 			switch (request.action) {
 				case "login": {
 					const mobile = request.mobile;
+					sendResponse({ success: true });
+					
 					if (mobile) {
-						sendResponse({ success: true });
-						
-						// Enhanced mobile login detection
+						// Enhanced mobile login detection with faster execution
 						const mclick = document.querySelector("#mHamburger, .hamburger, [data-bi-name='hamburger']");
-						const mobileMenu = document.querySelector("#HBContent, .mobile-menu");
-						
-						if (mclick && !mobileMenu) {
+						if (mclick && !document.querySelector("#HBContent, .mobile-menu")) {
 							mclick.click();
-							await delay(1000);
+							await delay(500); // Reduced delay
 						}
 						
-						// Look for sign-in elements with multiple selectors
 						const menuLink = document.querySelector(
 							"#HBSignIn a[role='menuitem']:not([style*='display: none']), " +
 							".signin-link:not([style*='display: none']), " +
 							"[data-bi-name='signin']:not([style*='display: none'])"
 						);
 						
-						// Check if already logged in
 						const isLoggedIn = document.querySelector(
 							"#id_n, .id_button, [data-bi-name='mecontrol'], " +
 							".msame_Header_name, .user-info"
@@ -32,46 +28,30 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 						if (!isLoggedIn && menuLink && 
 							(menuLink.href.includes("/fd/auth/signin") || 
 							 menuLink.href.includes("login.microsoftonline.com"))) {
-							await delay(1000);
+							await delay(300); // Reduced delay
 							menuLink.click();
-							console.log("Clicked mobile sign in link");
-						} else if (isLoggedIn) {
-							console.log("User already logged in on mobile");
-						} else {
-							console.log("No mobile login link found or user already logged in");
 						}
 					} else {
-						sendResponse({ success: true });
-						
-						// Enhanced desktop login detection
+						// Enhanced desktop login with faster execution
 						const click = document.querySelector(".b_clickarea, #id_s, .id_signin");
-						const desktopMenu = document.querySelector("#rewid-f, .desktop-menu");
-						
-						if (click && !desktopMenu) {
+						if (click && !document.querySelector("#rewid-f, .desktop-menu")) {
 							click.click();
-							await delay(1000);
+							await delay(300); // Reduced delay
 						}
 						
-						// Check for sign-in button on desktop
 						const signInButton = document.querySelector(
 							"#id_s, .id_signin, [data-bi-name='signin'], " +
 							".signin-button, .sign-in-link"
 						);
 						
-						// Check if already logged in
 						const isLoggedIn = document.querySelector(
 							"#id_n, .id_button, [data-bi-name='mecontrol'], " +
 							".msame_Header_name, .user-info, #id_rh"
 						);
 						
 						if (!isLoggedIn && signInButton) {
-							await delay(500);
+							await delay(200); // Reduced delay
 							signInButton.click();
-							console.log("Clicked desktop sign in button");
-						} else if (isLoggedIn) {
-							console.log("User already logged in on desktop");
-						} else {
-							console.log("No desktop sign-in button found or user already logged in");
 						}
 					}
 					break;
@@ -84,17 +64,13 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 						input.value = "";
 						input.focus();
 						
-						// Add more realistic typing with variable delays
+						// Faster typing simulation
 						for (const char of request.query) {
 							input.value += char;
 							input.dispatchEvent(new Event("input", { bubbles: true }));
-							await delay(
-								30 + Math.floor(Math.random() * 80),
-								true,
-							);
+							await delay(10 + Math.floor(Math.random() * 20)); // Much faster typing
 						}
 						
-						// Trigger additional events for better compatibility
 						input.dispatchEvent(new Event("change", { bubbles: true }));
 						input.dispatchEvent(new KeyboardEvent("keyup", { bubbles: true }));
 					} else {
@@ -119,26 +95,22 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 					input.dispatchEvent(new Event("input", { bubbles: true }));
 					input.dispatchEvent(new Event("change", { bubbles: true }));
 
-					// Try multiple methods to submit the search
+					// Faster form submission
 					const form = input.closest("form");
 					const submitButton = document.querySelector(
 						"#sb_form_go, .b_searchbox_submit, [type='submit']"
 					);
 					
 					if (form) {
-						await delay(500 + Math.random() * 500);
+						await delay(100); // Much reduced delay
 						
-						// Try clicking submit button first
 						if (submitButton && submitButton.offsetParent !== null) {
 							submitButton.click();
-							console.log("Clicked submit button");
 						} else {
-							// Fallback to form submission
 							form.submit();
-							console.log("Submitted form");
 						}
 						
-						// Alternative: simulate Enter key press
+						// Quick Enter key simulation
 						input.dispatchEvent(new KeyboardEvent("keydown", {
 							key: "Enter",
 							code: "Enter",
@@ -157,7 +129,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 				}
 
 				case "closePopups": {
-					// Enhanced popup closing with multiple selectors
+					// Faster popup closing
 					const popupSelectors = [
 						".dashboardPopUpPopUpCloseButton",
 						".popup-close",
@@ -167,19 +139,12 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 						".dismiss-button"
 					];
 					
-					let closed = false;
 					for (const selector of popupSelectors) {
 						const closeButton = document.querySelector(selector);
 						if (closeButton && closeButton.offsetParent !== null) {
 							closeButton.click();
-							closed = true;
-							console.log(`Closed popup with selector: ${selector}`);
 							break;
 						}
-					}
-					
-					if (!closed) {
-						console.log("No popup close button found");
 					}
 					
 					sendResponse({ success: true });
@@ -187,10 +152,6 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 				}
 
 				default:
-					console.warn(
-						"Unknown content script action:",
-						request.action,
-					);
 					sendResponse({
 						success: false,
 						message: "Unknown action.",
@@ -198,11 +159,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 					return;
 			}
 		} catch (err) {
-			console.error("Content script action failed:", err);
 			sendResponse({ success: false, message: err.message });
 		}
 	})();
-	return true; // Keeps sendResponse alive for async
+	return true;
 });
 
 async function delay(ms) {
